@@ -1,0 +1,214 @@
+import numpy as np
+import pandas as pd
+import os
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+#=========================
+# 1. Load and reshape data
+#=========================
+
+concentrations = [5, 20, 50, 100, 150, 200, 250, 300, 350, 400]
+all_data = []
+all_labels = []
+
+for conc in concentrations:
+    file_path = f'data/SWV_curve_augmented_{conc}.csv'
+    df = pd.read_csv(file_path)
+    
+    # Each file has 200 curves. Every 2 columns is one curve.
+    for i in range(1, 201):
+        # Extract the two columns for this specific curve
+        v_col = f'Voltage_{i}'
+        c_col = f'Current_{i}'
+        
+        # Convert to a 90x2 array
+        curve_array = df[[v_col, c_col]].values 
+        
+        all_data.append(curve_array)
+        all_labels.append(conc) # The target we want to predict
+
+# Convert list to a 3D Numpy Array
+X = np.array(all_data)   # Shape: (2000, 90, 2)
+y = np.array(all_labels) # Concentration, shape: (2000,)
+
+print(f"Data is now in 3D format: {X.shape}")
+
+#=================================
+# 2. Train, test, validation split
+#=================================
+
+# 2.1. Split into Train (85%) and Test (15%)
+# 'stratify=y' ensures every concentration is represented in both sets
+X_train_full, X_test, y_train_full, y_test = train_test_split(
+    X, y, test_size=0.15, random_state=42, stratify=y
+)
+
+# 2.2. Split the Train_full into Train (70% total) and Validation (15% total)
+X_train, X_val, y_train, y_val = train_test_split(
+    X_train_full, y_train_full, test_size=0.176, random_state=42, stratify=y_train_full
+)
+
+print(f"Train samples: {len(X_train)}")      # ~1400 curves
+print(f"Validation samples: {len(X_val)}")   # ~300 curves
+print(f"Test samples: {len(X_test)}")        # ~300 curves
+
+# 2.3. NN fail if feed them raw current values (like 10^-6 A) alongside voltages (like 0.5 V), must scale them.
+# Create the scaler
+scaler_X = StandardScaler()
+scaler_y = StandardScaler()
+
+# Flatten to (Samples * Points, Features) to scale all values equally
+X_train_reshaped = X_train.reshape(-1, 2)
+X_val_reshaped = X_val.reshape(-1, 2)
+X_test_reshaped = X_test.reshape(-1, 2)
+
+# Fit on TRAIN only (to avoid data leakage) and transform others
+X_train_scaled = scaler_X.fit_transform(X_train_reshaped).reshape(X_train.shape)
+X_val_scaled = scaler_X.transform(X_val_reshaped).reshape(X_val.shape)
+X_test_scaled = scaler_X.transform(X_test_reshaped).reshape(X_test.shape)
+
+y_train_scaled = scaler_y.fit_transform(y_train.reshape(-1, 1))
+y_val_scaled = scaler_y.transform(y_val.reshape(-1, 1))
+y_test_scaled = scaler_y.transform(y_test.reshape(-1, 1))
+
+print("Data is split and scaled. Ready for Neural Networks!")
+
+#==================================
+# 3. Model C: Hybrid CNN-Transformer
+#==================================
+import tensorflow as tf
+from tensorflow.keras import layers, models
+from sklearn.metrics import r2_score, mean_absolute_error, mean_squared_error
+from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.layers import LSTM, GRU, Bidirectional, Dense, Dropout, BatchNormalization
+from tensorflow.keras.callbacks import ReduceLROnPlateau
+
+early_stoppingC = EarlyStopping(
+    monitor='val_loss',      # Watch the validation loss
+    patience=15,             # How many epochs to wait for improvement before stopping
+    restore_best_weights=True # Crucial: returns the model to its best state, not the last one
+)
+
+lr_schedulerC = ReduceLROnPlateau(
+    monitor='val_loss', 
+    factor=0.5,       # Reduce LR by half
+    patience=7,        # Wait 7 epochs before reducing
+    min_lr=1e-6
+)
+
+# 3.1. Build the Hybrid CNN-Transformer model
+def build_hybrid_transformer(input_shape):
+    inputs = layers.Input(shape=input_shape)
+    
+    # 1. CNN Feature Extractor (The "Encoder")
+    x = layers.Conv1D(64, kernel_size=3, padding='same', activation='relu')(inputs)
+    x = layers.BatchNormalization()(x)
+    x = layers.Conv1D(128, kernel_size=3, padding='same', activation='relu')(x)
+    
+    # 2. Transformer Block (The "Observer")
+    # Multi-Head Attention allows the model to focus on the peak and baseline separately
+    attention_output = layers.MultiHeadAttention(num_heads=4, key_dim=128)(x, x)
+    x = layers.Add()([x, attention_output]) # Residual connection
+    x = layers.LayerNormalization()(x)
+    
+    # 3. Final Regression Head
+    x = layers.GlobalAveragePooling1D()(x)
+    x = layers.Dense(64, activation='relu')(x)
+    outputs = layers.Dense(1, activation='linear')(x)
+    
+    model = models.Model(inputs=inputs, outputs=outputs)
+    model.compile(optimizer='adam', loss='mse', metrics=['mae'])
+    return model
+
+# Initialize and train
+hybrid_model = build_hybrid_transformer((90, 2))
+
+#3.2. Train the Hybrid model
+history_hybrid = hybrid_model.fit(
+    X_train_scaled, y_train_scaled,
+    epochs=500, # Transformers often need a bit more time to converge
+    batch_size=32,
+    validation_data=(X_val_scaled, y_val_scaled),
+    callbacks=[early_stoppingC, lr_schedulerC],
+    verbose=1
+)
+
+#3.3. Get predictions
+y_pred_hybrid = hybrid_model.predict(X_test_scaled).flatten()
+
+#3.4. Calculate Metrics
+y_pred_nM = scaler_y.inverse_transform(y_pred_hybrid.reshape(-1, 1))
+y_test_nM = scaler_y.inverse_transform(y_test_scaled.reshape(-1, 1))
+
+r2_h = r2_score(y_test_scaled, y_pred_hybrid)
+mae_h = mean_absolute_error(y_test_nM, y_pred_nM)
+rmse_h = np.sqrt(mean_squared_error(y_test_nM, y_pred_nM))
+
+#================================
+# 4. Performance metrics of model
+#================================
+
+print("--- Model C: Hybrid CNN-Transformer Performance ---")
+best_epochC = np.argmin(history_hybrid.history['val_loss']) + 1
+print("Best epoch:", best_epochC)
+print(f"R-squared: {r2_h:.4f}")
+print(f"MAE: {mae_h:.2f} nM")
+print(f"RMSE: {rmse_h:.2f} nM")
+
+#Best epoch: 307
+#R-squared: 0.9987
+#MAE: 2.97 nM
+#RMSE: 4.72 nM
+
+#=========
+# 5. Plots
+#=========
+
+def plot_history(history):
+    plt.figure(figsize=(12, 5))
+    
+    # Plot Loss (MSE)
+    plt.subplot(1, 2, 1)
+    plt.plot(history.history['loss'], label='Train Loss')
+    plt.plot(history.history['val_loss'], label='Val Loss')
+    plt.title('Model Loss (MSE)')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.7)
+
+    # Plot MAE
+    plt.subplot(1, 2, 2)
+    plt.plot(history.history['mae'], label='Train MAE')
+    plt.plot(history.history['val_mae'], label='Val MAE')
+    plt.title('Mean Absolute Error')
+    plt.xlabel('Epochs')
+    plt.ylabel('MAE (Scaled)')
+    plt.legend()
+    plt.grid(True, linestyle='--', alpha=0.7)
+    
+    plt.tight_layout()
+    plt.show()
+
+plot_history(history_hybrid)
+
+def plot_predictions(y_true, y_pred):
+    plt.figure(figsize=(8, 6))
+    # Scatter plot
+    sns.regplot(x=y_true, y=y_pred, scatter_kws={'alpha':0.5}, line_kws={'color':'red'})
+    
+    # Perfect prediction line
+    plt.plot([y_true.min(), y_true.max()], [y_true.min(), y_true.max()], 'k--', lw=2)
+    
+    r2 = r2_score(y_true, y_pred)
+    plt.title(f'Predicted vs. Actual Concentration\n$R^2 = {r2:.4f}$')
+    plt.xlabel('Actual Concentration (nM)')
+    plt.ylabel('Predicted Concentration (nM)')
+    plt.grid(True, alpha=0.3)
+    plt.show()
+
+# y_test_nM and y_pred_nM from previous solution
+plot_predictions(y_test_nM, y_pred_nM)
