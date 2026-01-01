@@ -15,7 +15,8 @@ all_data = []
 all_labels = []
 
 for conc in concentrations:
-    file_path = f'data/SWV_curve_augmented_{conc}.csv'
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(base_dir, 'data', f'SWV_curve_augmented_{conc}.csv')
     df = pd.read_csv(file_path)
     
     # Each file has 200 curves. Every 2 columns is one curve.
@@ -211,4 +212,5 @@ def plot_predictions(y_true, y_pred):
     plt.show()
 
 # y_test_nM and y_pred_nM from previous solution
+
 plot_predictions(y_test_nM, y_pred_nM)
