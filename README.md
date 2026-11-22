@@ -1,5 +1,5 @@
 # SWV-Concentration-Prediction-ML
-Machine learning–based prediction of analyte concentration from SWV curves responses of MIP-based electrochemical sensors.
+Machine learning–based prediction of analyte concentration from simulated SWV curves of MIP-based electrochemical sensors.
 
 ---
 
@@ -25,14 +25,14 @@ In electrochemical sensing (specifically MIP sensors), the baseline can be compl
 
 ## 📊 Input Data
 
-SWV curves for 5, 20, 50, 100, 150, 200, 250, 300, 350, 400 nM will be augmented to 200 curve for each concentration => total 2000 curve x 90 data points per curve x 2 variables measured at each step (Voltage and Current).
+**The data are simulated, not measured.** Simulated SWV curves for 5, 20, 50, 100, 150, 200, 250, 300, 350 and 400 nM were augmented to 200 curves per concentration => 2000 curves x 90 data points per curve x 2 variables at each step (voltage and current).
 ![calibration curve](https://github.com/user-attachments/assets/55f8e42c-0ba7-4a30-bd80-4c132056c93b)
 
 ---
 
 ## 📊 Result and Conclusion
 
-All models achieved high accuracy ($R^2 > 0.99$), with the Hybrid architecture showing the superior precision required for low-concentration detection.
+On the held-out test set all three models reach $R^2 > 0.99$; the hybrid CNN–Transformer (Model C) gives the lowest error.
 
 | Model | A | B | C |
 | :--- | :---: | :---: | :---: |
@@ -41,19 +41,20 @@ All models achieved high accuracy ($R^2 > 0.99$), with the Hybrid architecture s
 | **MAE (nM)** | 5 | 7.74 | 2.97 |
 | **RMSE (nM)** | 7.77 | 10.61 | 4.72 |
 
-The results for the Hybrid CNN-Transformer model (Figures below) indicate a highly successful training phase and superior predictive accuracy for electrochemical concentration sensing.
+The figures below show training curves and predicted vs. actual concentration for Model C. Train and validation loss stay close throughout training, and the MAE settles after about epoch 100.
 
-**Loss Minimization**: The Model Loss (MSE) plot shows a rapid exponential decay in the early epochs, indicating that the hybrid architecture quickly identifies the fundamental relationship between the SWV curves and concentration.
+### What these results show, and what they don't
 
-**No Overfitting**: There is a perfect alignment between the Train Loss and Val Loss (as well as the MAE curves). The validation metrics do not diverge from the training metrics, proving that the model generalizes exceptionally well to unseen data and has not merely memorized the training set.
+* **Same originals in training and test.** All 200 curves at a concentration are augmented copies of the same simulated original, and the 70/15/15 split is random. The test set therefore contains copies of curves the models were trained on, so the scores measure how well the models fit this synthetic dataset, not how they would perform on new measurements.
+* **Concentration steps smaller than the augmentation spread.** At the high end the mean peak-to-baseline current (max − min of each curve) rises only about 5 % from 350 to 400 nM, while within each concentration it varies by about 11 % (coefficient of variation). Separating these levels with an RMSE of about 5 nM suggests the models also use features specific to each original curve, not only the signal size.
+* **Train and validation loss agree** because both sets come from the same originals; this does not test generalization to new sensors or measurements.
+* **No detection limit** can be estimated: the dataset has no blank or near-blank curves.
 
-**Learning Efficiency**: The fluctuations in MAE settle significantly after epoch 100, reaching a stable plateau around epoch 307. This justifies the use of a higher epoch count for the Transformer's attention mechanism to fine-tune its weights.
+### Next steps for a fair test
 
-**Linearity**: The Predicted vs. Actual plot shows that almost all data points lie directly on or very near the ideal $45^\circ$ dashed line. This confirms that the model maintains linear precision across the entire range from 5 nM to 400 nM.
-
-**Consistency**: The tight clustering of points at each concentration level (e.g., at 100 nM or 300 nM) suggests low variance in the model's predictions. Even at the highest concentration (400 nM), where sensor saturation often occurs in traditional methods, Model C maintains high fidelity.
-
-**Low Detection Limit Potential**: The high accuracy at the 5 nM and 20 nM points suggests the model is capable of distinguishing signal from background noise even at low analyte concentrations, which is a significant advantage of the Hybrid architecture.
+* Hold out whole concentrations (for example, train without 150 nM and test on it).
+* Simulate new original curves (new noise, baseline and drift) and use them only for testing.
+* Validate on measured SWV curves from a MIP sensor.
 
 <img width="1200" height="500" alt="Figure_C1" src="https://github.com/user-attachments/assets/794661d9-0ce5-49fb-aae4-e083cfccb45d" />
 
